@@ -35,10 +35,8 @@ NUM_EXAMPLES_PER_EPOCH_FOR_EVAL = cifar10_input.NUM_EXAMPLES_PER_EPOCH_FOR_EVAL
 
 
 # Constants describing the training process.
-MOVING_AVERAGE_DECAY = 0.9999     # The decay to use for the moving average.
-NUM_EPOCHS_PER_DECAY = 350.0      # Epochs after which learning rate decays.
-LEARNING_RATE_DECAY_FACTOR = 0.1  # Learning rate decay factor.
-INITIAL_LEARNING_RATE = 0.1       # Initial learning rate.
+LEARNING_RATE_DECAY_FACTOR = 0.99  # Learning rate decay factor.
+INITIAL_LEARNING_RATE = 0.1      # Initial learning rate.
 
 # If a model is trained with multiple GPUs, prefix all Op names with tower_name
 # to differentiate the operations. Note that this prefix is removed from the
@@ -232,7 +230,6 @@ def loss(logits, labels):
     Loss tensor of type float.
   """
   # Calculate the average cross entropy loss across the batch.
-  labels = tf.cast(labels, tf.int64)
   cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
       labels=labels, logits=logits, name='cross_entropy_per_example')
   cross_entropy_mean = tf.reduce_mean(cross_entropy, name='cross_entropy')
@@ -280,8 +277,7 @@ def get_train_op(total_loss, global_step):
     train_op: op for training.
   """
   # Variables that affect learning rate.
-  num_batches_per_epoch = NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN // FLAGS.batch_size
-  decay_steps = int(num_batches_per_epoch * NUM_EPOCHS_PER_DECAY)
+  decay_steps = NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN // FLAGS.batch_size
 
   # Decay the learning rate exponentially based on the number of steps.
   lr = tf.train.exponential_decay(INITIAL_LEARNING_RATE,
@@ -299,46 +295,48 @@ def get_train_op(total_loss, global_step):
     opt = tf.train.GradientDescentOptimizer(lr)
     optimize_op = opt.minimize(total_loss, global_step=global_step)
 
-  with tf.control_dependencies([optimize_op]):
-    train_op = tf.no_op(name='train')
-
-  return train_op
+  return optimize_op
 def train():
   with tf.Graph().as_default() as g:
-    total_examples = NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN * NUM_EPOCHS_PER_DECAY
-    total_steps = total_examples // FLAGS.batch_size
-    for step in range(int(total_steps)):
-      images, labels = distorted_inputs()
-      sess = tf.Session()
-      sess.run(tf.global_variables_initializer())
-      print(111111111111)
-      i=sess.run(images)
-      print(2222222222222)
-      print(i)
+    total_steps = 4000
+    images, labels = distorted_inputs()
+    with tf.variable_scope('model') as model_scope:
       logits = inference(images)
-      total_loss = loss(logits, labels)
-      global_step = tf.Variable(0, name='global_step', trainable=False)
-      train_op = get_train_op(total_loss, global_step)
-
-      summary = tf.summary.merge_all()
-      # Add the variable initializer Op.
-      init = tf.global_variables_initializer()
-      # Create a saver for writing training checkpoints.
-      saver = tf.train.Saver()
-      summary_writer = tf.summary.FileWriter(FLAGS.log_dir, g)
-      sess = tf.Session()
-      # And then after everything is built:
-      # Run the Op to initialize the variables.
+    total_loss = loss(logits, labels)
+    global_step = tf.Variable(0, name='global_step', trainable=False)
+    train_op = get_train_op(total_loss, global_step)
+    summary = tf.summary.merge_all()
+    # Add the variable initializer Op.
+    init = tf.global_variables_initializer()
+    # Create a saver for writing training checkpoints.
+    saver = tf.train.Saver()
+    summary_writer = tf.summary.FileWriter(FLAGS.log_dir, g)
+    # validate
+    images_v, labels_v = inputs(True)
+    with tf.variable_scope(model_scope, reuse = True):
+      logits_v = inference(images_v)
+    correct = tf.cast(tf.nn.in_top_k(logits_v, labels_v, 1), tf.int32)
+    # Return the number of true entries.
+    validate_op = tf.reduce_sum(correct)
+    with tf.Session() as sess:
+      coord = tf.train.Coordinator()
+      threads = tf.train.start_queue_runners(sess,coord)
       sess.run(init)
-      loss_value, _ = sess.run([total_loss, train_op])
-      if step % 50 == 0:
-        summary_str = sess.run(summary)
-        summary_writer.add_summary(summary_str)
-        summary_writer.flush()
-        print('Step %d: loss = %.2f' % (step, loss_value))
-      if (step + 1) % 1000 == 0 or (step + 1) == total_steps:
-        checkpoint_file = os.path.join(FLAGS.log_dir, 'model.ckpt')
-        saver.save(sess, checkpoint_file, global_step=step)
+      for step in range(int(total_steps)):
+        loss_value, _ = sess.run([total_loss, train_op])
+        if step % 50 == 0:
+          summary_str = sess.run(summary)
+          summary_writer.add_summary(summary_str)
+          summary_writer.flush()
+          print('Step %d: loss = %.2f' % (step, loss_value))
+        if (step + 1) % 1000 == 0 or (step + 1) == total_steps:
+          checkpoint_file = os.path.join(FLAGS.log_dir, 'model.ckpt')
+          saver.save(sess, checkpoint_file, global_step=step)
+      coord.request_stop()
+      coord.join(threads)
+      validate_result = sess.run(validate_op)
+      print('validate data accuracy rate is %d' % (validate_result))
+
 
 
 def maybe_download_and_extract():

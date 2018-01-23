@@ -86,7 +86,7 @@ def _generate_image_and_label_batch(image, label, min_queue_examples,
   """
   # Create a queue that shuffles the examples, and then
   # read 'batch_size' images + labels from the example queue.
-  num_preprocess_threads = 16
+  num_preprocess_threads = 10
   if shuffle:
     images, label_batch = tf.train.shuffle_batch(
         [image, label],
@@ -157,7 +157,7 @@ def distorted_inputs(data_dir, batch_size):
   label.set_shape([1])
 
   # Ensure that the random shuffling has good mixing properties.
-  min_fraction_of_examples_in_queue = 0.00001
+  min_fraction_of_examples_in_queue = 0.4
   min_queue_examples = int(NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN *
                            min_fraction_of_examples_in_queue)
   print ('Filling queue with %d CIFAR images before starting to train. '
@@ -214,7 +214,7 @@ def inputs(eval_data, data_dir, batch_size):
   label.set_shape([1])
 
   # Ensure that the random shuffling has good mixing properties.
-  min_fraction_of_examples_in_queue = 0.00001
+  min_fraction_of_examples_in_queue = 0.4
   min_queue_examples = int(num_examples_per_epoch *
                            min_fraction_of_examples_in_queue)
 
@@ -222,4 +222,3 @@ def inputs(eval_data, data_dir, batch_size):
   return _generate_image_and_label_batch(float_image, label,
                                          min_queue_examples, batch_size,
                                          shuffle=False)
-
