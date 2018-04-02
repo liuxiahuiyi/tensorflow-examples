@@ -53,6 +53,8 @@ flags.DEFINE_string('save_path', './data/ptb/logs',
                     'Model output directory.')
 FLAGS = flags.FLAGS
 
+INITIAL_LEARNING_RATE = 0.1
+LEARNING_RATE_DECAY_FACTOR = 0.7
 class PTBInput(object):
   """The input data."""
 
@@ -72,6 +74,7 @@ class PTBModel(object):
     self._input = input_
     self.batch_size = input_.batch_size
     self.num_steps = input_.num_steps
+    self.global_step = tf.train.get_or_create_global_step()
     size = config.hidden_size
     vocab_size = config.vocab_size
 
@@ -107,7 +110,11 @@ class PTBModel(object):
     if not is_training:
       return
 
-    self._lr = tf.Variable(0.0, trainable=False)
+    self._lr = tf.train.exponential_decay(INITIAL_LEARNING_RATE,
+                                  tf.train.get_or_create_global_step(),
+                                  config.decay_steps,
+                                  LEARNING_RATE_DECAY_FACTOR,
+                                  staircase=True)
     tvars = tf.trainable_variables()
     grads, _ = tf.clip_by_global_norm(tf.gradients(self._cost, tvars),
                                       config.max_grad_norm)
@@ -115,10 +122,6 @@ class PTBModel(object):
     self._train_op = optimizer.apply_gradients(
         zip(grads, tvars),
         global_step=tf.train.get_or_create_global_step())
-
-    self._new_lr = tf.placeholder(
-        tf.float32, shape=[], name="new_learning_rate")
-    self._lr_update = tf.assign(self._lr, self._new_lr)
 
   def _get_lstm_cell(self, config, is_training):
     if config.rnn_mode == 'basic':
@@ -165,35 +168,6 @@ class PTBModel(object):
     output = tf.reshape(tf.concat(outputs, 1), [-1, config.hidden_size])
     return output, state
 
-  def assign_lr(self, session, lr_value):
-    session.run(self._lr_update, feed_dict={self._new_lr: lr_value})
-
-  def export_ops(self, name):
-    """Exports ops to collections."""
-    self._name = name
-    ops = {'/'.join((self._name, 'cost')): self._cost}
-    if self._is_training:
-      ops.update(lr=self._lr, new_lr=self._new_lr, lr_update=self._lr_update)
-    for name, op in ops.items():
-      tf.add_to_collection(name, op)
-    self._initial_state_name = '/'.join((self._name, "initial"))
-    self._final_state_name = '/'.join((self._name, "final"))
-    util.export_state_tuples(self._initial_state, self._initial_state_name)
-    util.export_state_tuples(self._final_state, self._final_state_name)
-
-  def import_ops(self):
-    """Imports ops from collections."""
-    if self._is_training:
-      self._train_op = tf.get_collection_ref("train_op")[0]
-      self._lr = tf.get_collection_ref("lr")[0]
-      self._new_lr = tf.get_collection_ref("new_lr")[0]
-      self._lr_update = tf.get_collection_ref("lr_update")[0]
-    self._cost = tf.get_collection_ref('/'.join((self._name, "cost")))[0]
-    self._initial_state = util.import_state_tuples(
-        self._initial_state, self._initial_state_name)
-    self._final_state = util.import_state_tuples(
-        self._final_state, self._final_state_name)
-
   @property
   def input(self):
     return self._input
@@ -218,52 +192,8 @@ class PTBModel(object):
   def train_op(self):
     return self._train_op
 
-  @property
-  def initial_state_name(self):
-    return self._initial_state_name
-
-  @property
-  def final_state_name(self):
-    return self._final_state_name
-
-
-def run_epoch(session, model, eval_op=None, verbose=False):
-  """Runs the model on the given data."""
-  start_time = time.time()
-  costs = 0.0
-  iters = 0
-  state = session.run(model.initial_state)
-
-  fetches = {
-      "cost": model.cost,
-      "final_state": model.final_state,
-  }
-  if eval_op is not None:
-    fetches["eval_op"] = eval_op
-
-  for step in range(model.input.epoch_size):
-    feed_dict = {}
-    for i, (c, h) in enumerate(model.initial_state):
-      feed_dict[c] = state[i].c
-      feed_dict[h] = state[i].h
-
-    vals = session.run(fetches, feed_dict)
-    cost = vals["cost"]
-    state = vals["final_state"]
-
-    costs += cost
-    iters += model.input.num_steps
-
-    if verbose and step % (model.input.epoch_size // 10) == 10:
-      print("%.3f perplexity: %.3f speed: %.0f wps" %
-            (step * 1.0 / model.input.epoch_size, np.exp(costs / iters),
-             iters * model.input.batch_size / (time.time() - start_time)))
-
-  return np.exp(costs / iters)
-
 class Config(object):
   init_scale = 0.05
-  learning_rate = 1.0
   max_grad_norm = 5
   num_layers = 2
   num_steps = 35
@@ -271,7 +201,7 @@ class Config(object):
   max_epoch = 6
   max_max_epoch = 39
   keep_prob = 0.5
-  lr_decay = 0.8
+  decay_steps = 50
   batch_size = 20
   vocab_size = 10000
   rnn_mode = 'block'
@@ -283,51 +213,39 @@ def main(_):
   config = Config()
   train_data, valid_data, word_to_id = reader.ptb_raw_data(FLAGS.data_path, config.vocab_size)
 
-  with tf.Graph().as_default():
-    initializer = tf.random_uniform_initializer(-config.init_scale,
-                                                config.init_scale)
-
-    with tf.name_scope("Train"):
-      train_input = PTBInput(config=config, data=train_data, name="TrainInput")
-      with tf.variable_scope("Model", reuse=None, initializer=initializer):
-        m = PTBModel(is_training=True, config=config, input_=train_input)
-      tf.summary.scalar("Training Loss", m.cost)
-      tf.summary.scalar("Learning Rate", m.lr)
-
-    with tf.name_scope("Valid"):
-      valid_input = PTBInput(config=config, data=valid_data, name="ValidInput")
-      with tf.variable_scope("Model", reuse=True, initializer=initializer):
-        mvalid = PTBModel(is_training=False, config=config, input_=valid_input)
-      tf.summary.scalar("Validation Loss", mvalid.cost)
-
-    models = {"Train": m, "Valid": mvalid}
-    for name, model in models.items():
-      model.export_ops(name)
-    metagraph = tf.train.export_meta_graph()
-
-  with tf.Graph().as_default():
-    tf.train.import_meta_graph(metagraph)
-    for model in models.values():
-      model.import_ops()
-    sv = tf.train.Supervisor(logdir=FLAGS.save_path)
-    config_proto = tf.ConfigProto(allow_soft_placement=False)
-    with sv.managed_session(config=config_proto) as session:
-      for i in range(config.max_max_epoch):
-        lr_decay = config.lr_decay ** max(i + 1 - config.max_epoch, 0.0)
-        m.assign_lr(session, config.learning_rate * lr_decay)
-
-        print("Epoch: %d Learning rate: %.3f" % (i + 1, session.run(m.lr)))
-        train_perplexity = run_epoch(session, m, eval_op=m.train_op,
-                                     verbose=True)
-        print("Epoch: %d Train Perplexity: %.3f" % (i + 1, train_perplexity))
-        valid_perplexity = run_epoch(session, mvalid)
-        print("Epoch: %d Valid Perplexity: %.3f" % (i + 1, valid_perplexity))
-
-
-      if FLAGS.save_path:
-        print("Saving model to %s." % FLAGS.save_path)
-        sv.saver.save(session, FLAGS.save_path, global_step=sv.global_step)
+  with tf.name_scope("Train"):
+    train_input = PTBInput(config=config, data=train_data, name="TrainInput")
+    with tf.variable_scope("Model", reuse=None):
+      m = PTBModel(is_training=True, config=config, input_=train_input)
+    tf.summary.scalar("Training Loss", m.cost)
+    tf.summary.scalar("Learning Rate", m.lr)
+  with tf.name_scope("Valid"):
+    valid_input = PTBInput(config=config, data=valid_data, name="ValidInput")
+    with tf.variable_scope("Model", reuse=True):
+      mvalid = PTBModel(is_training=False, config=config, input_=valid_input)
+    tf.summary.scalar("Validation Loss", mvalid.cost)
+  summary_hook = tf.train.SummarySaverHook(
+    save_steps=10,
+    output_dir=FLAGS.save_path,
+    summary_op=tf.summary.merge_all())
+  logging_hook = tf.train.LoggingTensorHook(
+    tensors={'step': m.global_step,
+             'train_loss': m.cost,
+             'valiade_loss': mvalid.cost,
+             'lr': m.lr},
+    every_n_iter=10)
+  with tf.train.MonitoredTrainingSession(
+    checkpoint_dir=FLAGS.save_path,
+    hooks=[logging_hook],
+    chief_only_hooks=[summary_hook],
+    # Since we provide a SummarySaverHook, we need to disable default
+    # SummarySaverHook. To do that we set save_summaries_steps to 0.
+    save_summaries_steps=0,
+    config=tf.ConfigProto(allow_soft_placement=True)) as mon_sess:
+    while not mon_sess.should_stop():
+      mon_sess.run([m.train_op, mvalid.cost])
 
 
 if __name__ == '__main__':
+  tf.logging.set_verbosity(tf.logging.INFO)
   tf.app.run()
