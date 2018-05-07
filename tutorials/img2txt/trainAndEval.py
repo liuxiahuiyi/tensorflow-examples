@@ -23,6 +23,15 @@ tf.logging.set_verbosity(tf.logging.INFO)
 def main(unused_argv):
   assert FLAGS.train_dir, "--train_dir is required"
 
+  with open('./data/mscoco/words.txt') as f:
+    words = f.read()
+    words = words.split('\n')
+  dictionary = {}
+  for word in words:
+    info = word.split()
+    dictionary[info[0]] = info[1]
+  reverse_dictionary = dict(zip(dictionary.values(), dictionary.keys()))
+
   train_config = configuration.TrainConfig()
   eval_config = configuration.EvalConfig()
 
@@ -37,10 +46,16 @@ def main(unused_argv):
     # Build the model.
     train_model = Model.Model(train_config, mode="train")
     train_model.build()
+    inception_output_var = tf.get_variable(name='inception_output_var',
+                                           trainable=False,
+                                           shape=train_model.inception_output.shape,
+                                           initializer=tf.zeros_initializer())
     image_embeddings_var = tf.get_variable(name='image_embeddings_var',
                                            trainable=False,
                                            shape=train_model.image_embeddings.shape,
                                            initializer=tf.zeros_initializer())
+    image_embeddings_op = tf.assign(image_embeddings_var, train_model.image_embeddings)
+    inception_output_op = tf.assign(inception_output_var, train_model.inception_output)
     tf.get_variable_scope().reuse_variables()
     eval_model = Model.Model(eval_config, mode="eval")
     eval_model.build()
@@ -51,31 +66,31 @@ def main(unused_argv):
 
     saver = tf.train.Saver()
     inception_saver = tf.train.Saver(train_model.inception_variables)
-    embedding_config = projector.ProjectorConfig()
-    embedding = embedding_config.embeddings.add()
-    embedding.tensor_name = 'image_embeddings_var'
 
     with tf.Session(config=tf.ConfigProto(allow_soft_placement=True)) as sess:
       sess.run(init)
-      coord = tf.train.Coordinator()
-      threads = tf.train.start_queue_runners(sess,coord)
 
       if ckpt_state and ckpt_state.model_checkpoint_path:
         saver.restore(sess, ckpt_state.model_checkpoint_path)
       else:
         inception_saver.restore(sess, train_dir + '/inception_v3.ckpt')
 
+
+      coord = tf.train.Coordinator()
+      threads = tf.train.start_queue_runners(sess,coord)
+
       summary_writer = tf.summary.FileWriter(train_dir, sess.graph)
       for i in range(10000):
         _, step = sess.run([train_model.train_op, train_model.global_step])
         if step % 10 == 0:
-          train_loss, eval_loss, summaries = sess.run(
-            [train_model.total_loss, eval_model.total_loss, summary_op])
+          train_loss, eval_loss, summaries, predictions, _1, _2 = sess.run(
+            [train_model.total_loss, eval_model.total_loss, summary_op, train_model.predictions,
+                image_embeddings_op, inception_output_op])
           print('step: %d, train_loss: %f, eval_loss: %f' % (step, train_loss, eval_loss))
+          tran_predictions = [reverse_dictionary[str(indice)] for indice in predictions]
+          print(tran_predictions)
           summary_writer.add_summary(summaries, step)
           summary_writer.flush()
-          '''image_embeddings_var.assign(train_model.image_embeddings)
-          projector.visualize_embeddings(summary_writer, embedding_config)'''
           saver.save(sess, train_dir + '/model.ckpt', step)
 
 if __name__ == "__main__":

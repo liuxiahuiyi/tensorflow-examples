@@ -24,7 +24,7 @@ class TrainConfig(object):
     # for differences between tokenizer versions used in preprocessing. There is
     # no harm in using a value greater than the actual vocab size, but using a
     # value less than the actual vocab size will result in an error.
-    self.vocab_size = 10000
+    self.vocab_size = 8000
 
     # Batch size.
     self.batch_size = 8
@@ -65,7 +65,7 @@ class EvalConfig(object):
     # for differences between tokenizer versions used in preprocessing. There is
     # no harm in using a value greater than the actual vocab size, but using a
     # value less than the actual vocab size will result in an error.
-    self.vocab_size = 10000
+    self.vocab_size = 8000
 
     # Batch size.
     self.batch_size = 8
@@ -100,7 +100,7 @@ class InferenceConfig(object):
     # for differences between tokenizer versions used in preprocessing. There is
     # no harm in using a value greater than the actual vocab size, but using a
     # value less than the actual vocab size will result in an error.
-    self.vocab_size = 10000
+    self.vocab_size = 8000
 
     # Dimensions of Inception v3 input images.
     self.image_height = 299

@@ -7,24 +7,24 @@ import tensorflow as tf
 
 from tutorials.img2txt import configuration
 from tutorials.img2txt import model as Model
-from tutorials.img2txt.ops import image_process
+from PIL import Image
 import matplotlib.pyplot as plt
 FLAGS = tf.app.flags.FLAGS
 
 
 tf.flags.DEFINE_string("model_dir", "./data/mscoco/img2txt_logs",
                        "Directory for saving and loading model checkpoints.")
-tf.flags.DEFINE_string("inception_file", "./data/mscoco/img2txt_logs/inception_v3.ckpt",
-                       "File for saving and loading model inception.")
-tf.flags.DEFINE_string("img_path", "./data/mscoco/raw-data/train2014/COCO_train2014_000000237327.jpg",
+tf.flags.DEFINE_string("img_path", "./data/mscoco/raw-data/train2014/COCO_train2014_000000237401.jpg",
                        "Image path.")
+tf.flags.DEFINE_string("summary_dir", "./data/mscoco/summary_dir",
+                       "Directory for saving and loading model checkpoints.")
 
-tf.logging.set_verbosity(tf.logging.INFO)
 
 
 def main(unused_argv):
+  img=Image.open(FLAGS.img_path)
+  img.show()
 
-  inference_config = configuration.InferenceConfig()
   with open('./data/mscoco/words.txt') as f:
     words = f.read()
     words = words.split('\n')
@@ -33,6 +33,8 @@ def main(unused_argv):
     info = word.split()
     dictionary[info[0]] = info[1]
   reverse_dictionary = dict(zip(dictionary.values(), dictionary.keys()))
+
+  inference_config = configuration.InferenceConfig()
   # Build the TensorFlow graph.
   with tf.Graph().as_default():
     # Build the model.
@@ -42,34 +44,38 @@ def main(unused_argv):
     if not (ckpt_state and ckpt_state.model_checkpoint_path):
       raise Exception('No model found')
     saver = tf.train.Saver()
-    inception_saver = tf.train.Saver(model.inception_variables)
+    summary_op = tf.summary.merge_all()
 
     encoded_image = tf.gfile.FastGFile(FLAGS.img_path, "rb").read()
-    image = image_process.process_image(encoded_image, False, inference_config.image_height,
-                          inference_config.image_width)
-    image = tf.expand_dims(image, 0)
+
     with tf.Session() as sess:
+
       saver.restore(sess, ckpt_state.model_checkpoint_path)
-      inception_saver.restore(sess, FLAGS.inception_file)
-      image_value = sess.run(image)
-      plt.imshow(image_value[0])
-      plt.show()
-      initial_state_concat = sess.run(model.initial_state_concat,
-                                     feed_dict={model.images:image_value})
-      last_state_concat = initial_state_concat
-      new_state_concat = None
-      prediction = [2]
+      initial_state = sess.run(model.initial_state,
+                                      feed_dict={
+                                                  model.image_placeholder:encoded_image,
+                                                })
+      last_state = initial_state
+      predictions = [2]
       sentence = ''
-      while prediction[0] != 3:
-        prediction, new_state_concat = sess.run([model.prediction,model.new_state_concat],
-      	                               feed_dict={
-      	                                           model.last_state_concat:last_state_concat,
-      	                                           model.input_seqs: prediction,
-      	                                         })
-        last_state_concat = new_state_concat
-        if prediction[0] != 3:
-          sentence += (reverse_dictionary[str(prediction[0])] + ' ')
+      '''summaries = sess.run(summary_op, feed_dict={
+                                                   model.image_placeholder:encoded_image,
+                                                   model.last_state_concat:last_state_concat,
+                                                   model.input_seqs: predictions,
+                                                 })'''
+      while predictions[0] != 3:
+        predictions, last_state = sess.run([model.predictions,model.new_state],
+      	                                feed_dict={
+      	                                            model.last_state:last_state,
+      	                                            model.input_seqs: predictions,
+      	                                          })
+        print(last_state)
+        if predictions[0] != 3:
+          sentence += (reverse_dictionary[str(predictions[0])] + ' ')
       print(sentence)
+      '''summary_writer = tf.summary.FileWriter(FLAGS.summary_dir, sess.graph)
+      summary_writer.add_summary(summaries)
+      summary_writer.flush()'''
 
 if __name__ == "__main__":
   tf.app.run()

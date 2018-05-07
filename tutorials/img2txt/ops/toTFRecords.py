@@ -92,13 +92,13 @@ tf.flags.DEFINE_string("end_word", "</S>",
                        "Special word added to the end of each sentence.")
 tf.flags.DEFINE_string("unknown_word", "<UNK>",
                        "Special word meaning 'unknown'.")
-tf.flags.DEFINE_integer("vocab_size", 10000,
+tf.flags.DEFINE_integer("vocab_size", 8000,
                         "The minimum number of occurrences of each word in the "
                         "training set for inclusion in the vocabulary.")
 tf.flags.DEFINE_string("word_counts_output_file", "/tmp/word_counts.txt",
                        "Output vocabulary file of word counts.")
 
-tf.flags.DEFINE_integer("num_threads", 2,
+tf.flags.DEFINE_integer("num_threads", 4,
                         "Number of threads to preprocess the images.")
 
 FLAGS = tf.flags.FLAGS

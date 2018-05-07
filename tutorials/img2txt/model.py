@@ -7,6 +7,7 @@ import tensorflow as tf
 
 from tutorials.img2txt import image_embedding
 from tutorials.img2txt.ops import inputs
+from tutorials.img2txt.ops import image_process
 
 
 class Model(object):
@@ -76,9 +77,12 @@ class Model(object):
       self.input_mask (training and eval only)
     """
     if self.mode == 'inference':
-      self.images = tf.placeholder(tf.float32,
-        shape=[1,self.config.image_height,self.config.image_width,3])
-      self.input_seqs = tf.placeholder(tf.int64, shape=[1])
+      self.image_placeholder = tf.placeholder(dtype=tf.string, shape=[], name='image_placeholder')
+      self.input_seqs = tf.placeholder(tf.int64, shape=[1], name='seq_placeholder')
+      self.images = tf.expand_dims(image_process.process_image(self.image_placeholder,
+                                                               self.is_training(),
+                                                               self.config.image_height,
+                                                               self.config.image_width), 0)
       return
     images, input_seqs, target_seqs, masks = inputs.prefetch_input_data(self.config.input_file_pattern,
                                                                         self.is_training(),
@@ -96,9 +100,8 @@ class Model(object):
     """
     inception_output = image_embedding.inception_v3(
         self.images,
-        is_training=self.is_training())
-    self.inception_variables = tf.get_collection(
-        tf.GraphKeys.GLOBAL_VARIABLES, scope="InceptionV3")
+        is_training=False)
+    self.inception_output = inception_output
     # Map inception output into embedding space.
     with tf.variable_scope("image_embedding") as scope:
       self.image_embeddings = tf.contrib.layers.fully_connected(
@@ -107,8 +110,10 @@ class Model(object):
           activation_fn=None,
           weights_initializer=self.initializer,
           biases_initializer=None,
+          trainable=self.is_training(),
           scope=scope)
-
+    self.inception_variables = tf.get_collection(
+        tf.GraphKeys.GLOBAL_VARIABLES, scope="InceptionV3")
     # Save the embedding size in the graph.
     tf.constant(self.config.embedding_size, name="embedding_size")
 
@@ -123,6 +128,7 @@ class Model(object):
       embedding_map = tf.get_variable(
           name="map",
           shape=[self.config.vocab_size, self.config.embedding_size],
+          trainable=self.is_training(),
           initializer=self.initializer)
       self.seq_embeddings = tf.nn.embedding_lookup(embedding_map, self.input_seqs)
 
@@ -142,8 +148,9 @@ class Model(object):
     # This LSTM cell has biases and outputs tanh(new_c) * sigmoid(o), but the
     # modified LSTM in the "Show and Tell" paper has no biases and outputs
     # new_c * sigmoid(o).
-    lstm_cell = tf.contrib.rnn.BasicLSTMCell(
-        num_units=self.config.num_lstm_units, state_is_tuple=True)
+    lstm_cell = tf.contrib.rnn.LSTMCell(num_units=self.config.num_lstm_units,
+                                        use_peepholes=True,
+                                        state_is_tuple=True)
     if self.mode == "train":
       lstm_cell = tf.contrib.rnn.DropoutWrapper(
           lstm_cell,
@@ -155,15 +162,14 @@ class Model(object):
       zero_state = lstm_cell.zero_state(
           batch_size=self.image_embeddings.get_shape()[0], dtype=tf.float32)
       _, initial_state = lstm_cell(self.image_embeddings, zero_state)
+      self.initial_state = initial_state
 
       # Allow the LSTM variables to be reused.
       lstm_scope.reuse_variables()
       if self.mode == 'inference':
-        self.initial_state_concat = tf.concat(axis=1, values=initial_state)
-        self.last_state_concat = tf.placeholder(tf.float32, [1, sum(lstm_cell.state_size)])
-        last_state = tf.split(value=self.last_state_concat, num_or_size_splits=2, axis=1)
-        lstm_outputs, new_state = lstm_cell(self.seq_embeddings, state=last_state)
-        self.new_state_concat = tf.concat(axis=1, values=new_state)
+        self.last_state = tf.placeholder(tf.float32, [2, 1, self.config.num_lstm_units])
+        lstm_outputs, self.new_state = lstm_cell(self.seq_embeddings,
+                                                 state=[tf.squeeze(state, [0]) for state in tf.split(self.last_state, 2)])
       else:
         # Run the batch of sequence embeddings through the LSTM.
         sequence_length = tf.reduce_sum(self.masks, 1)
@@ -183,46 +189,39 @@ class Model(object):
           num_outputs=self.config.vocab_size,
           activation_fn=None,
           weights_initializer=self.initializer,
+          trainable=self.is_training(),
           scope=logits_scope)
-    if self.mode == 'inference':
-      self.prediction = tf.argmax(logits, axis=1)
-      return
-    targets = tf.reshape(self.target_seqs, [-1])
-    weights = tf.to_float(tf.reshape(self.masks, [-1]))
-    # Compute losses.
-    losses = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=targets,
-                                                            logits=logits)
-    batch_loss = tf.div(tf.reduce_sum(tf.multiply(losses, weights)),
-                        tf.reduce_sum(weights),
-                        name="batch_loss")
-    tf.losses.add_loss(batch_loss)
-    total_loss = tf.losses.get_total_loss()
-    self.total_loss = total_loss
-    self.target_cross_entropy_losses = losses  # Used in evaluation.
-    self.target_cross_entropy_loss_weights = weights  # Used in evaluation.
-    self.prediction = tf.argmax(logits, axis=1)
-    # Add summaries.
-    if self.is_training():
+    if self.mode != 'inference':
+      targets = tf.reshape(self.target_seqs, [-1])
+      weights = tf.to_float(tf.reshape(self.masks, [-1]))
+      # Compute losses.
+      losses = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=targets,
+                                                              logits=logits)
+      batch_loss = tf.div(tf.reduce_sum(tf.multiply(losses, weights)),
+                          tf.reduce_sum(weights),
+                          name="batch_loss")
+      tf.losses.add_loss(batch_loss)
+      total_loss = tf.losses.get_total_loss()
+      self.total_loss = total_loss
+      self.target_cross_entropy_losses = losses  # Used in evaluation.
+      self.target_cross_entropy_loss_weights = weights  # Used in evaluation.
       tf.summary.scalar("losses/batch_loss", batch_loss)
       tf.summary.scalar("losses/total_loss", total_loss)
-      for var in tf.trainable_variables():
-        tf.summary.histogram("parameters/" + var.op.name, var)
-      for var in tf.get_collection(tf.GraphKeys.UPDATE_OPS):
-        tf.summary.histogram("moving_average/" + var.op.name, var)
-      tf.summary.histogram('image_embeddings', self.image_embeddings)
-      tf.summary.histogram('seq_embeddings', self.seq_embeddings)
-      tf.summary.histogram('predictions', tf.multiply(tf.to_float(self.prediction), weights))
+      # Add summaries.
+
+    for var in tf.trainable_variables():
+      tf.summary.histogram("parameters/" + var.op.name, var)
+    self.predictions = tf.argmax(logits, axis=1)
+    tf.summary.histogram('predictions', tf.to_float(self.predictions))
 
   def build_train_op(self):
     trainable_variables = tf.trainable_variables()
     grads = tf.gradients(self.total_loss, trainable_variables)
     grads, _ = tf.clip_by_global_norm(grads, self.config.grads_clip_norm)
     optimizer = tf.train.AdamOptimizer()
-    apply_op = optimizer.apply_gradients(
+    self.train_op = optimizer.apply_gradients(
       zip(grads, trainable_variables),
       global_step=self.global_step, name='train_step')
-    train_ops = [apply_op] + tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-    self.train_op = tf.group(*train_ops)
 
   def build(self):
     """Creates all ops for training and evaluation."""
