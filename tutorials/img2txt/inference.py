@@ -14,7 +14,7 @@ FLAGS = tf.app.flags.FLAGS
 
 tf.flags.DEFINE_string("model_dir", "./data/mscoco/img2txt_logs",
                        "Directory for saving and loading model checkpoints.")
-tf.flags.DEFINE_string("img_path", "./data/mscoco/raw-data/train2014/COCO_train2014_000000237401.jpg",
+tf.flags.DEFINE_string("img_path", "./data/mscoco/raw-data/val2014/COCO_val2014_000000285844.jpg",
                        "Image path.")
 tf.flags.DEFINE_string("summary_dir", "./data/mscoco/summary_dir",
                        "Directory for saving and loading model checkpoints.")
