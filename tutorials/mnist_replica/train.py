@@ -141,11 +141,6 @@ def main(unused_argv):
 
       train_op = opt.minimize(loss, global_step=global_step)
 
-      if FLAGS.sync_replicas:
-        sync_replicas_hook = opt.make_session_run_hook(is_chief)
-      else:
-        sync_replicas_hook = None
-
       if FLAGS.existing_servers:
         server_grpc_url = "grpc://" + worker_spec[FLAGS.task_index]
         print("Using existing server at: %s" % server_grpc_url)
@@ -162,12 +157,15 @@ def main(unused_argv):
                  'train_loss': loss},
         every_n_iter=20)
       stop_hook = tf.train.StopAtStepHook(num_steps=200)
+      hooks = [logging_hook, stop_hook]
+      if FLAGS.sync_replicas:
+        hooks.push(opt.make_session_run_hook(is_chief))
       with tf.train.MonitoredTrainingSession(
         checkpoint_dir=FLAGS.train_dir,
         config=sess_config,
         master=server_grpc_url,
         is_chief=is_chief,
-        hooks=[sync_replicas_hook, logging_hook, stop_hook]) as mon_sess:
+        hooks=hooks) as mon_sess:
         while not mon_sess.should_stop():
           batch_xs, batch_ys = mnist.train.next_batch(FLAGS.batch_size)
           train_feed = {x: batch_xs, y_: batch_ys}
